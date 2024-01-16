@@ -37,7 +37,11 @@ class DeepMindControl:
         time_step = self.env.step(action)
         obs = dict(time_step.observation)
         obs['image'] = self.render()
-        reward = time_step.reward or 0
+        theta = np.arctan2(obs['orientation'][1], obs['orientation'][0])
+        reward_error = 1 - abs(theta)/np.pi
+        reward_energy = - abs(action[0]) + 1
+        reward = (reward_error * 6/10) + (reward_energy * 4/10)
+        reward = reward or 0
         done = time_step.last()
         return obs, reward, done
     

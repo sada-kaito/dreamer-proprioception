@@ -115,7 +115,6 @@ class DenseEncoder(tf.keras.Model):
                 obs[k] = tf.expand_dims(v, axis=-1)
             elif len(v.shape)==0:
                 obs[k] = tf.expand_dims(v, axis=-1)
-        print(obs)
         obs = tf.concat(list(obs.values()), axis=-1)
         if len(obs.shape)==1:
             obs = tf.expand_dims(obs, axis=0)

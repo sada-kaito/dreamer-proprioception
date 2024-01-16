@@ -160,7 +160,7 @@ class Dreamer(tf.keras.Model):
             action = self.actor(feat).sample()
         else:
             action = self.actor(feat).mode()
-        action = tf.reshape(action, (1,6))
+        action = tf.reshape(action, (1,1))
         state = (latent, action)
         return action, state
 
@@ -264,7 +264,7 @@ def summarize_episode(episode, config, datadir, writer, prefix):
         [tf.summary.scalar('sim/' + k, v) for k, v in metrics]
 
 def make_env(config, writer, prefix, datadir, store):
-    env = wrappers_proprioception.DeepMindControl(config.domain, config.task)
+    env = wrappers_proprioception.DeepMindControl(config.domain, config.task, camera='side')
     env = wrappers_proprioception.ActionRepeat(env, config.action_count)
     env = wrappers_proprioception.NormalizeActions(env)
     env = wrappers_proprioception.TimeLimit(env, config.time_limit / config.action_count)
