@@ -101,27 +101,6 @@ class RSSM(tf.keras.Model):
         return prior
 
 
-class ConvEncoder(tf.keras.Model):
-    
-    def __init__(self, depth=32, act=tf.nn.relu):
-        super().__init__()
-        self._depth = depth
-        self.h1_en = kl.Conv2D(1 * depth, 4, activation=act, strides=2)
-        self.h2_en = kl.Conv2D(2 * depth, 4, activation=act, strides=2)
-        self.h3_en = kl.Conv2D(4 * depth, 4, activation=act, strides=2)
-        self.h4_en = kl.Conv2D(8 * depth, 4, activation=act, strides=2)
-        
-    def call(self, obs):
-        # (batch_size,batch_length,64,64,3)>(batch_size*batchlength,64,64,3)
-        x = tf.reshape(obs['image'], (-1,) + tuple(obs['image'].shape[-3:]))
-        x = self.h1_en(x) #入力shape: (1, 64, 64, 1) 出力shape: (1, 31, 31, 32)
-        x = self.h2_en(x) #出力shape: (1, 14, 14, 64)
-        x = self.h3_en(x) #出力shape: (1, 6, 6, 96)
-        x = self.h4_en(x) #出力shape: (1, 2, 2, 128)
-        shape = tf.concat([tf.shape(obs['image'])[:-3], [32 * self._depth]], 0)
-        return tf.reshape(x, shape) # (batch_size,2,2,128)->(batch_size,1024)
-
-
 class DenseEncoder(tf.keras.Model):
     
     def __init__(self, act=tf.nn.relu):
@@ -130,38 +109,19 @@ class DenseEncoder(tf.keras.Model):
         self.h2 = kl.Dense(200, activation=act)
 
     def call(self, obs):
-        orientation = obs['orientation']
-        velocity = obs['velocity']
-        x = tf.concat((orientation, velocity), axis=-1)
-        x = self.h1(x)
+        obs = {k: v for k, v in obs.items() if k not in ['image','reward','action']}
+        for k, v in obs.items():
+            if len(v.shape)==2:
+                obs[k] = tf.expand_dims(v, axis=-1)
+            elif len(v.shape)==0:
+                obs[k] = tf.expand_dims(v, axis=-1)
+        print(obs)
+        obs = tf.concat(list(obs.values()), axis=-1)
+        if len(obs.shape)==1:
+            obs = tf.expand_dims(obs, axis=0)
+        x = self.h1(obs)
         x = self.h2(x)
         return x
-        
-
-class ConvDecoder(tf.keras.Model):
-
-    def __init__(self, depth=32, act=tf.nn.relu, shape=(64, 64, 3)):
-        super().__init__()
-        self._depth = depth
-        self._shape = shape
-        self.h1_de = kl.Dense(32 * depth, activation = None)
-        self.h2_de = kl.Conv2DTranspose(4 * depth, 5, activation=act, strides=2)
-        self.h3_de = kl.Conv2DTranspose(2 * depth, 5, activation=act, strides=2)
-        self.h4_de = kl.Conv2DTranspose(1 * depth, 6, activation=act, strides=2)
-        self.h5_de = kl.Conv2DTranspose(shape[-1], 6, activation=None,strides=2)
-
-    def call(self, features):
-        x = self.h1_de(features)
-        x = tf.reshape(x, [-1, 1, 1, 32 * self._depth])
-        # Conv2D系は4次元の入力を想定しているため
-        # reshape(batch_len,batch_size,1024)->(len*size,1,1,1024)
-        x = self.h2_de(x) # 出力shape: (batch, 5, 5, 128)
-        x = self.h3_de(x) # 出力shape: (batch, 13, 13, 64)
-        x = self.h4_de(x) # 出力shape: (batch, 30, 30, 32)
-        x = self.h5_de(x) # 出力shape: (batch, 64, 64, 3)
-        shape = tf.concat([tf.shape(features)[:-1], self._shape], 0)
-        mean = tf.reshape(x, shape) # 出力shape: (batch, 64, 64, 3)
-        return tfd.Independent(tfd.Normal(mean, scale=1), len(self._shape))
 
 
 class DenseDecoder(tf.keras.Model):
@@ -176,6 +136,7 @@ class DenseDecoder(tf.keras.Model):
         x = self.h1_de(features)
         mean = self.h2_de(x)
         return tfd.Independent(tfd.Normal(mean, scale=1), len(self._shape))
+
 
 class ActorNetwork(tf.keras.Model):
     

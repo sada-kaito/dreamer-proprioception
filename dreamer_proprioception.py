@@ -35,8 +35,8 @@ def define_config():
     config.precision = 16
     
     # Environment
-    config.domain = 'walker'
-    config.task = 'walk'
+    config.domain = 'pendulum'
+    config.task = 'swingup'
     config.action_count = 2
     config.time_limit = 1000
     config.prefill = 5000
@@ -47,9 +47,9 @@ def define_config():
     config.kl_scale = 1.0
     
     # Training
-    config.batch_size = 2
-    config.batch_length = 3
-    config.train_steps = 1
+    config.batch_size = 50
+    config.batch_length = 50
+    config.train_steps = 100
     config.model_lr = 6e-4
     config.value_lr = 8e-5
     config.actor_lr = 8e-5
@@ -105,9 +105,12 @@ class Dreamer(tf.keras.Model):
             image_pred = self.decoder(feat)
             reward_pred = self.reward(feat)
             likes = tools_proprioception.AttrDict()
-            obs = [v for k, v in data.items() if k not in ['image','reward','action']]
-            obs = tf.concat(obs, axis=-1)
-            likes.image = tf.reduce_mean(image_pred.log_prob(obs))
+            obs = {k: v for k, v in data.items() if k not in ['image','reward','action']}
+            for k, v in obs.items():
+                if len(v.shape)==2:
+                    obs[k] = tf.expand_dims(v, axis=-1)
+            obs = tf.concat(list(obs.values()), axis=-1)
+            likes.obs = tf.reduce_mean(image_pred.log_prob(obs))
             likes.reward = tf.reduce_mean(reward_pred.log_prob(data['reward']))
             prior_dist = self.dynamics.get_dist(prior)
             post_dist = self.dynamics.get_dist(post)
@@ -149,8 +152,8 @@ class Dreamer(tf.keras.Model):
             action = tf.zeros((1, self.act_dim), self.float)
         else:
             latent, action = state
-        embed = self.encoder(pproprioceptioncess(obs, self.c))
-        embed = tf.reshape(embed, (1,1024))
+        embed = self.encoder(preprocess(obs, self.c))
+        embed = tf.reshape(embed, (1,200))
         latent, _ = self.dynamics.obs_step(latent, action, embed)
         feat = self.dynamics.get_feat(latent)
         if training:
@@ -186,7 +189,7 @@ class Dreamer(tf.keras.Model):
         self._metrics['value_grad_norm'].update_state(value_norm)
         self._metrics['prior_entropy'].update_state(prior_dist.entropy())
         self._metrics['post_entropy'].update_state(post_dist.entropy())
-        self._metrics['image_loss'].update_state(-likes['image'])
+        self._metrics['obs_loss'].update_state(-likes['obs'])
         self._metrics['reward_loss'].update_state(-likes['reward'])
         self._metrics['kl_div'].update_state(div)
         self._metrics['model_loss'].update_state(model_loss)
@@ -222,7 +225,7 @@ class Dreamer(tf.keras.Model):
 
 
 
-def pproprioceptioncess(obs, config):
+def preprocess(obs, config):
     dtype = global_policy().compute_dtype
     obs = obs.copy()
     with tf.device('cpu:0'):
@@ -239,7 +242,7 @@ def load_dataset(directory, config):
         directory, config.train_steps, config.batch_length)
     dataset = tf.data.Dataset.from_generator(generator, types, shapes)
     dataset = dataset.batch(config.batch_size, drop_remainder=True)
-    dataset = dataset.map(functools.partial(pproprioceptioncess, config=config))
+    dataset = dataset.map(functools.partial(preprocess, config=config))
     dataset = dataset.prefetch(10)
     return dataset
 
