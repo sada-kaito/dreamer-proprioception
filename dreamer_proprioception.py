@@ -16,15 +16,15 @@ from tensorflow.keras.mixed_precision import set_global_policy
 from tensorflow.keras.mixed_precision import Policy
 from tensorflow_probability import distributions as tfd
 
-import models_repro
-import tools_repro
-import wrappers_repro
+import models_proprioception
+import tools_proprioception
+import wrappers_proprioception
 
 
 tf.get_logger().setLevel('ERROR')
 
 def define_config():
-    config = tools_repro.AttrDict()
+    config = tools_proprioception.AttrDict()
     # General
     config.logdir = pathlib.Path('.')
     config.load_model = False
@@ -66,10 +66,12 @@ def define_config():
 
 class Dreamer(tf.keras.Model):
     
-    def __init__(self, config, datadir, actspace, writer):
+    def __init__(self, config, datadir, act, state, writer):
         super().__init__()
         self.c = config
-        self.act_dim = actspace.shape[0]
+        self.act_dim = act.shape[0]
+        state_space = [v for k, v in state.items() if k not in ['image','reward']]
+        self.state_dim = sum([v.shape[0] for v in state_space])
         self._metrics = collections.defaultdict(tf.metrics.Mean)
         self.float = global_policy().compute_dtype
         self._writer = writer
@@ -77,14 +79,14 @@ class Dreamer(tf.keras.Model):
         self.build_model()
     
     def build_model(self):
-        self.encoder = models_repro.DenseEncoder()
-        self.decoder = models_repro.DenseDecoder()
-        self.dynamics = models_repro.RSSM()
-        self.reward = models_repro.RewardDecoder()
-        self.value = models_repro.ValueNetwork()
-        self.actor = models_repro.ActorNetwork(self.act_dim)
+        self.encoder = models_proprioception.DenseEncoder()
+        self.decoder = models_proprioception.DenseDecoder(self.state_dim)
+        self.dynamics = models_proprioception.RSSM()
+        self.reward = models_proprioception.RewardDecoder()
+        self.value = models_proprioception.ValueNetwork()
+        self.actor = models_proprioception.ActorNetwork(self.act_dim)
         model_modules = [self.encoder, self.dynamics, self.decoder, self.reward]
-        Optimizer = functools.partial(tools_repro.Adam, clip=self.c.grad_clip)
+        Optimizer = functools.partial(tools_proprioception.Adam, clip=self.c.grad_clip)
         self.model_opt = Optimizer(model_modules, self.c.model_lr)
         self.value_opt = Optimizer([self.value], self.c.value_lr)
         self.actor_opt = Optimizer([self.actor], self.c.actor_lr)
@@ -102,8 +104,10 @@ class Dreamer(tf.keras.Model):
             feat = self.dynamics.get_feat(post)
             image_pred = self.decoder(feat)
             reward_pred = self.reward(feat)
-            likes = tools_repro.AttrDict()
-            likes.image = tf.reduce_mean(image_pred.log_prob(data['image']))
+            likes = tools_proprioception.AttrDict()
+            obs = [v for k, v in data.items() if k not in ['image','reward','action']]
+            obs = tf.concat(obs, axis=-1)
+            likes.image = tf.reduce_mean(image_pred.log_prob(obs))
             likes.reward = tf.reduce_mean(reward_pred.log_prob(data['reward']))
             prior_dist = self.dynamics.get_dist(prior)
             post_dist = self.dynamics.get_dist(post)
@@ -116,7 +120,7 @@ class Dreamer(tf.keras.Model):
             reward = self.reward(imag_feat).mode()
             gamma = self.c.discount * tf.ones_like(reward)
             value = self.value(imag_feat).mode()
-            returns = tools_repro.lambda_return(
+            returns = tools_proprioception.lambda_return(
                 reward[:-1], value[:-1], gamma[:-1], bootstrap=value[-1], 
                 lambda_=self.c.disclam, horizon=self.c.horizon, axis=0)
             discount = tf.concat([tf.ones_like(gamma[:1]), gamma[:-2]], 0)
@@ -145,7 +149,7 @@ class Dreamer(tf.keras.Model):
             action = tf.zeros((1, self.act_dim), self.float)
         else:
             latent, action = state
-        embed = self.encoder(preprocess(obs, self.c))
+        embed = self.encoder(pproprioceptioncess(obs, self.c))
         embed = tf.reshape(embed, (1,1024))
         latent, _ = self.dynamics.obs_step(latent, action, embed)
         feat = self.dynamics.get_feat(latent)
@@ -218,7 +222,7 @@ class Dreamer(tf.keras.Model):
 
 
 
-def preprocess(obs, config):
+def pproprioceptioncess(obs, config):
     dtype = global_policy().compute_dtype
     obs = obs.copy()
     with tf.device('cpu:0'):
@@ -228,23 +232,23 @@ def preprocess(obs, config):
     return obs
 
 def load_dataset(directory, config):
-    episode = next(tools_repro.load_episodes(directory, 1))
+    episode = next(tools_proprioception.load_episodes(directory, 1))
     types = {k: v.dtype for k, v in episode.items()}
     shapes = {k: (None,) + v.shape[1:] for k, v in episode.items()}
-    generator = lambda: tools_repro.load_episodes(
+    generator = lambda: tools_proprioception.load_episodes(
         directory, config.train_steps, config.batch_length)
     dataset = tf.data.Dataset.from_generator(generator, types, shapes)
     dataset = dataset.batch(config.batch_size, drop_remainder=True)
-    dataset = dataset.map(functools.partial(preprocess, config=config))
+    dataset = dataset.map(functools.partial(pproprioceptioncess, config=config))
     dataset = dataset.prefetch(10)
     return dataset
 
 def count_steps(datadir, config):
-  return tools_repro.count_episodes(datadir)[1] * config.action_count
+  return tools_proprioception.count_episodes(datadir)[1] * config.action_count
 
 
 def summarize_episode(episode, config, datadir, writer, prefix):
-    episodes, steps = tools_repro.count_episodes(datadir)
+    episodes, steps = tools_proprioception.count_episodes(datadir)
     length = (len(episode['reward']) - 1) * config.action_count
     ret = episode['reward'].sum()
     print(f'{prefix.title()} episode of length {length} with return {ret:.1f}.')
@@ -257,17 +261,17 @@ def summarize_episode(episode, config, datadir, writer, prefix):
         [tf.summary.scalar('sim/' + k, v) for k, v in metrics]
 
 def make_env(config, writer, prefix, datadir, store):
-    env = wrappers_repro.DeepMindControl(config.domain, config.task)
-    env = wrappers_repro.ActionRepeat(env, config.action_count)
-    env = wrappers_repro.NormalizeActions(env)
-    env = wrappers_repro.TimeLimit(env, config.time_limit / config.action_count)
+    env = wrappers_proprioception.DeepMindControl(config.domain, config.task)
+    env = wrappers_proprioception.ActionRepeat(env, config.action_count)
+    env = wrappers_proprioception.NormalizeActions(env)
+    env = wrappers_proprioception.TimeLimit(env, config.time_limit / config.action_count)
     callbacks = []
     if store:
-        callbacks.append(lambda ep: tools_repro.save_episodes(datadir, [ep]))
+        callbacks.append(lambda ep: tools_proprioception.save_episodes(datadir, [ep]))
     callbacks.append(
         lambda ep: summarize_episode(ep, config, datadir, writer, prefix))
-    env = wrappers_repro.Collect(env, callbacks, config.precision)
-    env = wrappers_repro.RewardObs(env)
+    env = wrappers_proprioception.Collect(env, callbacks, config.precision)
+    env = wrappers_proprioception.RewardObs(env)
     return env
     
 
@@ -288,7 +292,8 @@ def main(config):
     writer.set_as_default()
     train_env = make_env(config, writer, 'train', datadir, store=True)
     test_env = make_env(config, writer, 'test', datadir, store=False)
-    actspace = train_env.action_space # Box(-1.0, 1.0, (6,), float32)
+    act_space = train_env.action_space # Box(-1.0, 1.0, (6,), float32)
+    state_space = train_env.observation_space
     
     # prefill dataset with random episodes.
     step = count_steps(datadir, config)
@@ -298,12 +303,12 @@ def main(config):
         train_env.reset()
         done = False
         while not done:
-            obs, reward, done = train_env.step(actspace.sample())
+            obs, reward, done = train_env.step(act_space.sample())
     
     # Train and evaluate the agent
     step = count_steps(datadir, config)
     print(f'Simulating agent for {config.steps-step} steps.')
-    agent = Dreamer(config, datadir, actspace, writer)
+    agent = Dreamer(config, datadir, act_space, state_space, writer)
     
     if config.load_model:
         print('load')

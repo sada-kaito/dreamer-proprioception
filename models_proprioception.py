@@ -4,7 +4,7 @@ from tensorflow.keras import layers as kl
 from tensorflow_probability import distributions as tfd
 from tensorflow.keras.mixed_precision import global_policy
 
-import tools_repro
+import tools_proprioception
 
 class RSSM(tf.keras.Model):
     
@@ -101,7 +101,7 @@ class RSSM(tf.keras.Model):
         return prior
 
 
-class DenseEncoder(tf.keras.Model):
+class ConvEncoder(tf.keras.Model):
     
     def __init__(self, depth=32, act=tf.nn.relu):
         super().__init__()
@@ -120,9 +120,25 @@ class DenseEncoder(tf.keras.Model):
         x = self.h4_en(x) #出力shape: (1, 2, 2, 128)
         shape = tf.concat([tf.shape(obs['image'])[:-3], [32 * self._depth]], 0)
         return tf.reshape(x, shape) # (batch_size,2,2,128)->(batch_size,1024)
+
+
+class DenseEncoder(tf.keras.Model):
+    
+    def __init__(self, act=tf.nn.relu):
+        super().__init__()
+        self.h1 = kl.Dense(200, activation=act)
+        self.h2 = kl.Dense(200, activation=act)
+
+    def call(self, obs):
+        orientation = obs['orientation']
+        velocity = obs['velocity']
+        x = tf.concat((orientation, velocity), axis=-1)
+        x = self.h1(x)
+        x = self.h2(x)
+        return x
         
 
-class DenseDecoder(tf.keras.Model):
+class ConvDecoder(tf.keras.Model):
 
     def __init__(self, depth=32, act=tf.nn.relu, shape=(64, 64, 3)):
         super().__init__()
@@ -147,6 +163,19 @@ class DenseDecoder(tf.keras.Model):
         mean = tf.reshape(x, shape) # 出力shape: (batch, 64, 64, 3)
         return tfd.Independent(tfd.Normal(mean, scale=1), len(self._shape))
 
+
+class DenseDecoder(tf.keras.Model):
+
+    def __init__(self, shape, act=tf.nn.relu):
+        super().__init__()
+        self._shape = [shape]
+        self.h1_de = kl.Dense(200, activation=act)
+        self.h2_de = kl.Dense(shape, activation=None)
+
+    def call(self, features):
+        x = self.h1_de(features)
+        mean = self.h2_de(x)
+        return tfd.Independent(tfd.Normal(mean, scale=1), len(self._shape))
 
 class ActorNetwork(tf.keras.Model):
     
@@ -174,9 +203,9 @@ class ActorNetwork(tf.keras.Model):
         std = self.act_std(x)
         std = tf.nn.softplus(std + raw_init_std) + self.min_std
         dist = tfd.Normal(mean, std)
-        dist = tfd.TransformedDistribution(dist, tools_repro.TanhBijector())
+        dist = tfd.TransformedDistribution(dist, tools_proprioception.TanhBijector())
         dist = tfd.Independent(dist, reinterpreted_batch_ndims=1)
-        dist = tools_repro.SampleDist(dist)
+        dist = tools_proprioception.SampleDist(dist)
         return dist
 
 

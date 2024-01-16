@@ -19,6 +19,9 @@ class DeepMindControl:
     def observation_space(self):
         spaces = {}
         for key, value in self.env.observation_spec().items():
+            if value.shape==():
+                spaces[key] = gym.spaces.Box(-np.inf, np.inf, dtype=np.float32)
+                continue
             spaces[key] = gym.spaces.Box(
                 -np.inf, np.inf, value.shape, dtype=np.float32)
         spaces['image'] = gym.spaces.Box(
